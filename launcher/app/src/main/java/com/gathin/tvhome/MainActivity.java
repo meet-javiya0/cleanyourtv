@@ -46,6 +46,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.os.UserManager;
 import android.provider.Settings;
 import android.text.SpannableString;
 import android.text.Spanned;
@@ -324,6 +325,19 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      * reach Home after onPause, when that key opened another app, and must not start the clock over the app.
      */
     private boolean resumed;
+    /**
+     * Between the cold-boot start and the first unlock: Android starts Home before the user is unlocked, and
+     * anything below reads credential-protected storage, which is not there yet. Nothing is built then; a plain
+     * window stands in and {@link #unlockReceiver} rebuilds for real (#1448).
+     */
+    private boolean locked;
+    /** The unlock that ends the cold-boot window. */
+    private final BroadcastReceiver unlockReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            recreate();
+        }
+    };
     /** Rebuild the tiles on the way back to Home only when apps changed meanwhile (TileRefresh). */
     private final TileRefresh tileRefresh = new TileRefresh();
     /** PackageManager's change counter at the last rebuild, to catch a package broadcast that never arrived. */
@@ -456,6 +470,22 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Cold boot (#1448): with file-based encryption Android turns the screen on and starts Home before the
+        // first unlock, and on a board with no FallbackHome only a direct-boot-aware activity may start in that
+        // window. Everything below reads credential-protected storage (Config.load, SharedPreferences), which
+        // throws there, so the lock gets a plain screen and the real Home is built on the unlock broadcast.
+        UserManager users = getSystemService(UserManager.class);
+        if (users != null && !users.isUserUnlocked()) {
+            locked = true;
+            getWindow().getDecorView().setBackgroundColor(Color.BLACK);
+            setContentView(new View(this));
+            registerReceiver(unlockReceiver, new IntentFilter(Intent.ACTION_USER_UNLOCKED),
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            ? Context.RECEIVER_NOT_EXPORTED : Context.RECEIVER_EXPORTED);
+            // The unlock can land between the check above and the registration, and then nothing would arrive.
+            if (users.isUserUnlocked()) recreate();
+            return;
+        }
         setContentView(R.layout.activity_main);
         density = getResources().getDisplayMetrics().density;
         // config.xml, overlaid by config.json from a pushed theme (see Config and tools/theme.sh).
@@ -1051,6 +1081,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (locked) return;
         if (openLauncherSettingsIfAsked(intent)) return;
         if (openLibraryIfAsked(intent)) return;
         if (openInputsIfAsked(intent)) return;
@@ -1071,6 +1102,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onStart() {
         super.onStart();
+        if (locked) return;
         stopped = false;
         started = true;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1086,6 +1118,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onResume() {
         super.onResume();
+        if (locked) return;
         resumed = true;
         // A festival that started or ended while Home was in the background: rebuild with or without it.
         if (festive != festival.active(LocalDate.now())) {
@@ -1302,6 +1335,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onPause() {
         super.onPause();
+        if (locked) return;
         resumed = false;
         // No UP reaches a paused Home, so a vendor-key hold it saw go down would still open its app later.
         // Only Home's own share is dropped: a key service that saw the same DOWN keeps its hold.
@@ -1331,6 +1365,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onStop() {
         super.onStop();
+        if (locked) return;
         started = false;
         unregisterReceiver(timeReceiver);
         clockRefresh.stop();
@@ -1347,6 +1382,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     public void onTrimMemory(int level) {
         super.onTrimMemory(level);
+        if (locked) return;
         // RUNNING_LOW and CRITICAL also arrive while Home is visible when an accessibility service keeps the
         // process in the foreground; never blank the screen the owner is looking at.
         if (!MemoryTrimPolicy.shouldRelease(level, started)) return;
@@ -1364,6 +1400,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (locked) return;
         if (hasFocus) {
             startPendingSettingsReorder();
             if (libraryFocusPending && appLibrary == null) focusLibrary();
@@ -1376,6 +1413,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (locked) {
+            // Nothing was built, so only the receiver is ours to let go of.
+            unregisterReceiver(unlockReceiver);
+            return;
+        }
         RemoteKeys.release(this);
         cancelHoldOk();
         if (gameDay != null) gameDay.shutdown();
@@ -1426,6 +1468,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      */
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (locked) return super.dispatchKeyEvent(event);
         if (homeIgnoreChannelKeys && RemoteKeys.isChannelKey(event.getKeyCode())) return true;
         // Vendor keys (TCL Netflix button, 4062) never reach the key services, only the focused window, so their
         // "hold:" entries run here too or nowhere. Only while resumed: onPause releases Home's holds, and a DOWN

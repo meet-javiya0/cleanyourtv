@@ -744,14 +744,16 @@ Things that bit us or contributors, so they don't bite you. Commands use `tools/
   details). With file-based encryption (`getprop ro.crypto.type` says `file`) Android starts Home before
   the first unlock, and only a direct-boot-aware activity can start then. Most firmwares have a
   `FallbackHome` that stands in until the unlock; some, like this CVTE board, do not, and then boot
-  never completes. This repo's launcher is only partly direct-boot-aware: `HomeKeyService` declares
+  never completes. This repo's launcher is partly direct-boot-aware: `HomeKeyService` declares
   the flag, so Android binds it while the user is still locked, and `GuardRevival` declares it too
   (neither that listener nor [the standby opt-in](#the-power-key-does-not-wake-the-tv-while-the-key-helper-is-bound)
   is on in an ordinary install). `MainActivity`, the activity that
-  answers HOME, does not declare it. The second command below therefore prints
-  `PARTIALLY_DIRECT_BOOT_AWARE` for this launcher and cannot say whether Home exists before the
-  unlock; on a set with no `FallbackHome`, the first command is the one that decides. Check both
-  before disabling the stock launcher:
+  answers HOME, declares it as well, and that is what lets Home start before the unlock: it shows a
+  plain window until then and builds the real Home when `ACTION_USER_UNLOCKED` arrives. The second
+  command below still prints `PARTIALLY_DIRECT_BOOT_AWARE` for the package, because the components
+  that are not aware (the input key helper, the screensaver) count too, so it cannot say whether
+  Home exists before the unlock; on a set with no `FallbackHome`, the first command is the one that
+  decides. Check both before disabling the stock launcher:
   ```sh
   tools/tv.py 'cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME'
   tools/tv.py 'dumpsys package <new.launcher.package> | grep -o "[A-Z_]*DIRECT_BOOT_AWARE"'

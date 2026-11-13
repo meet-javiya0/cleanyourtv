@@ -2,6 +2,7 @@ package com.gathin.tvhome;
 
 import android.content.Context;
 import android.content.res.Configuration;
+import android.os.UserManager;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -25,6 +26,11 @@ final class LauncherLocale {
 
     /** base with the configured language, or base itself when locale is off. */
     static Context wrap(Context base) {
+        // Cold boot (#1448): Home starts before the first unlock, and the language comes from
+        // credential-protected storage, which throws there. This window keeps the TV's language; MainActivity
+        // rebuilds itself on the unlock broadcast.
+        UserManager users = base.getSystemService(UserManager.class);
+        if (users != null && !users.isUserUnlocked()) return base;
         Locale locale = parse(Config.load(base).locale);
         if (locale == null) return base;
         // Formatters that take no Context (the clock's date, the lunar line) follow the default locale.
